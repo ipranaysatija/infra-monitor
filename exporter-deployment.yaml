@@ -1,0 +1,87 @@
+---
+# Deployment: tells Kubernetes to run 2 replicas of our exporter pod
+# and defines how to update them (rolling restart strategy)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: infra-monitor-exporter
+  namespace: default
+  labels:
+    app: infra-monitor-exporter
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: infra-monitor-exporter
+  strategy:
+    type: RollingUpdate          # Never takes all pods down at once
+    rollingUpdate:
+      maxUnavailable: 1          # At most 1 pod down during update
+      maxSurge: 1                # At most 1 extra pod during update
+  template:
+    metadata:
+      labels:
+        app: infra-monitor-exporter
+      annotations:
+        # Prometheus uses these annotations to auto-discover this pod for scraping
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: exporter
+          image: pranaysatija01/infra-monitor-exporter:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: metrics
+
+          # Resource limits: prevents one pod from starving the whole node
+          resources:
+            requests:
+              cpu: "50m"        # 50 millicores = 5% of 1 CPU
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+
+          # Liveness probe: if /healthz fails, K8s restarts the container
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # Readiness probe: pod only receives traffic when this passes
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+
+          # Environment variables loaded from ConfigMap (see configmap.yaml)
+          envFrom:
+            - configMapRef:
+                name: infra-monitor-config
+
+---
+# Service: stable internal DNS name and IP for the exporter pods
+# Prometheus uses this to reach the exporter even as pods come and go
+apiVersion: v1
+kind: Service
+metadata:
+  name: infra-monitor-exporter
+  namespace: default
+  labels:
+    app: infra-monitor-exporter
+spec:
+  selector:
+    app: infra-monitor-exporter    # Routes to all pods with this label
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP                  # Internal only; not exposed outside the cluster

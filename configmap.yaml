@@ -1,0 +1,15 @@
+---
+# ConfigMap: externalises config from the container image
+# Change values here and do a rolling restart - no image rebuild needed
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: infra-monitor-config
+  namespace: default
+data:
+  # Scrape interval passed to the exporter as an env var
+  SCRAPE_INTERVAL: "5s"
+  # Log level - change to "debug" for verbose output during incidents
+  LOG_LEVEL: "info"
+  # Environment tag included in all metric labels
+  ENV: "production"

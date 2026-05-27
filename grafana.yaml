@@ -1,0 +1,99 @@
+---
+# Grafana ConfigMap: auto-provisions the Prometheus datasource
+# so you don't have to manually add it through the UI
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: default
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin"          # Change in production; use a Secret
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards-provision
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provision
+          configMap:
+            name: grafana-dashboard-provision
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: default
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: NodePort         # Exposes Grafana on a node port so you can open it in a browser
+
+---
+# Tells Grafana where to find dashboard JSON files
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provision
+  namespace: default
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        folder: Infra Monitor
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards

@@ -1,0 +1,199 @@
+---
+# ConfigMap: Prometheus scrape config
+# Defines WHAT Prometheus scrapes and HOW OFTEN
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: default
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s       # Pull metrics every 15 seconds
+      evaluation_interval: 15s   # Evaluate alert rules every 15 seconds
+
+    # Alert rules file - loaded from the rules ConfigMap below
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      # Scrape our custom Go exporter
+      - job_name: 'infra-monitor-exporter'
+        static_configs:
+          - targets: ['infra-monitor-exporter:8080']
+
+      # Scrape Prometheus itself (meta-monitoring)
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # Auto-discover pods with prometheus.io/scrape: "true" annotation
+---
+# Alert rules ConfigMap
+# These are the SLO/SLI alert rules that fire when budgets burn too fast
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: default
+data:
+  slo-alerts.yml: |
+    groups:
+      - name: slo_alerts
+        rules:
+
+          # SLO BREACH: availability dropped below 99.9%
+          - alert: SLOBreachAvailability
+            expr: sli_availability_ratio < 0.999
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "SLO breach on {{ $labels.service }}"
+              description: >
+                Service {{ $labels.service }} availability is {{ $value | humanizePercentage }},
+                which is below the 99.9% SLO target. Immediate action required.
+
+          # ERROR BUDGET: more than 50% of monthly budget consumed
+          - alert: ErrorBudgetBurnHigh
+            expr: sli_error_budget_remaining_ratio < 0.5
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Error budget >50% consumed for {{ $labels.service }}"
+              description: >
+                {{ $labels.service }} has consumed more than 50% of its monthly
+                error budget. Current remaining: {{ $value | humanizePercentage }}.
+                Consider freezing non-critical deployments.
+
+          # ERROR BUDGET: critically low - less than 10% remaining
+          - alert: ErrorBudgetNearExhaustion
+            expr: sli_error_budget_remaining_ratio < 0.1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Error budget nearly exhausted for {{ $labels.service }}"
+              description: >
+                Only {{ $value | humanizePercentage }} of error budget remaining
+                for {{ $labels.service }}. All risky changes must be halted.
+
+          # HIGH CPU: node CPU above 80% for 5 minutes
+          - alert: HighCPUUsage
+            expr: system_cpu_usage_percent > 80
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High CPU on {{ $labels.node }}"
+              description: "Node {{ $labels.node }} CPU at {{ $value }}%"
+
+          # POD CRASH LOOP: more than 5 restarts in 10 minutes
+          - alert: PodCrashLooping
+            expr: increase(k8s_pod_restart_total[10m]) > 5
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod {{ $labels.pod }} crash-looping"
+              description: >
+                Pod {{ $labels.pod }} in namespace {{ $labels.namespace }}
+                has restarted {{ $value }} times in the last 10 minutes.
+
+---
+# Prometheus Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      # ServiceAccount allows Prometheus to call the K8s API
+      # (needed for pod auto-discovery)
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.51.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=15d"   # Keep 15 days of data
+            - "--web.enable-lifecycle"               # Allows hot config reload
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: storage
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+        - name: storage
+          emptyDir: {}           # In production, use a PersistentVolumeClaim
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: default
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+  type: ClusterIP
+
+---
+# RBAC: allows Prometheus to list/watch pods for auto-discovery
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: default

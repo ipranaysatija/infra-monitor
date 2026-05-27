@@ -1,0 +1,131 @@
+---
+# Grafana dashboard defined as code (JSON model inside a ConfigMap)
+# Grafana auto-loads this on startup - no manual clicking needed
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: default
+data:
+  sre-dashboard.json: |
+    {
+      "title": "SRE Observability Dashboard",
+      "uid": "infra-monitor-v1",
+      "schemaVersion": 38,
+      "refresh": "10s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Availability (SLI) — target 99.9%",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sli_availability_ratio",
+              "legendFormat": "{{ service }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0.99,
+              "thresholds": {
+                "steps": [
+                  { "value": null,  "color": "red" },
+                  { "value": 0.999, "color": "green" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 2,
+          "title": "Error budget remaining",
+          "type": "bargauge",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sli_error_budget_remaining_ratio",
+              "legendFormat": "{{ service }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "value": null, "color": "red" },
+                  { "value": 0.1,  "color": "orange" },
+                  { "value": 0.5,  "color": "green" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Request rate (req/s)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "rate(app_http_requests_total[1m])",
+              "legendFormat": "{{ path }} {{ status }}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+        {
+          "id": 4,
+          "title": "Latency p95 (seconds)",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, rate(app_http_request_duration_seconds_bucket[5m]))",
+              "legendFormat": "p95 {{ path }}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 5,
+          "title": "CPU usage per node (%)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "system_cpu_usage_percent",
+              "legendFormat": "{{ node }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "steps": [
+                  { "value": null, "color": "green" },
+                  { "value": 80,   "color": "red" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 6,
+          "title": "Active connections per service",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "app_active_connections",
+              "legendFormat": "{{ service }}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        }
+      ]
+    }
